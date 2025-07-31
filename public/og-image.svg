@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0284c7;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f0f9ff;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bgGradient)"/>
+  
+  <!-- Decorative elements -->
+  <circle cx="100" cy="100" r="50" fill="#ffffff" opacity="0.1"/>
+  <circle cx="1100" cy="530" r="80" fill="#ffffff" opacity="0.1"/>
+  <circle cx="200" cy="500" r="30" fill="#ffffff" opacity="0.1"/>
+  
+  <!-- Main content area -->
+  <rect x="100" y="100" width="1000" height="430" rx="20" fill="#ffffff" opacity="0.95"/>
+  
+  <!-- Cross symbol -->
+  <g transform="translate(150, 200)">
+    <circle cx="50" cy="50" r="40" fill="#0ea5e9"/>
+    <path d="M35 25 L65 25 L65 35 L75 35 L75 65 L65 65 L65 75 L35 75 L35 65 L25 65 L25 35 L35 35 Z" 
+          fill="#ffffff"/>
+  </g>
+  
+  <!-- Title -->
+  <text x="250" y="180" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="#1e293b">
+    Parheheon HKBP Riau 2025
+  </text>
+  
+  <!-- Subtitle -->
+  <text x="250" y="220" font-family="Arial, sans-serif" font-size="24" fill="#64748b">
+    Sistem Absensi Digital
+  </text>
+  
+  <!-- Features -->
+  <g transform="translate(250, 280)">
+    <circle cx="15" cy="15" r="8" fill="#0ea5e9"/>
+    <text x="35" y="20" font-family="Arial, sans-serif" font-size="18" fill="#374151">QR Code Scanner</text>
+  </g>
+  
+  <g transform="translate(250, 320)">
+    <circle cx="15" cy="15" r="8" fill="#0ea5e9"/>
+    <text x="35" y="20" font-family="Arial, sans-serif" font-size="18" fill="#374151">Barcode Detection</text>
+  </g>
+  
+  <g transform="translate(250, 360)">
+    <circle cx="15" cy="15" r="8" fill="#0ea5e9"/>
+    <text x="35" y="20" font-family="Arial, sans-serif" font-size="18" fill="#374151">Real-time Attendance</text>
+  </g>
+  
+  <!-- Bottom text -->
+  <text x="100" y="580" font-family="Arial, sans-serif" font-size="16" fill="#ffffff" opacity="0.8">
+    Modern Digital Attendance System for Church Events
+  </text>
+</svg> 
