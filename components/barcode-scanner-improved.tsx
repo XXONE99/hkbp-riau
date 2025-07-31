@@ -27,6 +27,7 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
   const [scanCount, setScanCount] = useState<number>(0)
   const [lastDetectedCode, setLastDetectedCode] = useState<string | null>(null)
   const [lastCodeType, setLastCodeType] = useState<"qr" | "barcode" | null>(null)
+  const [isStartingCamera, setIsStartingCamera] = useState(false)
   const { toast } = useToast()
 
   // Check camera availability
@@ -47,64 +48,167 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
     }
   }, [isScanning, cameraActive])
 
+  // Monitor video element state
+  useEffect(() => {
+    if (videoRef.current) {
+      console.log("📹 Video element found, readyState:", videoRef.current.readyState)
+      console.log("📹 Video srcObject:", videoRef.current.srcObject)
+    }
+  }, [cameraActive])
+
+  // Debug camera state changes
+  useEffect(() => {
+    console.log("📹 Camera state changed:", { cameraActive, hasCamera, error })
+  }, [cameraActive, hasCamera, error])
+
   const checkCameraAvailability = async () => {
     try {
+      console.log("🔍 Checking camera availability...")
+      
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.error("❌ getUserMedia not supported")
+        setHasCamera(false)
+        setError("Browser tidak mendukung akses kamera")
+        return
+      }
+
       const devices = await navigator.mediaDevices.enumerateDevices()
       const videoDevices = devices.filter((device) => device.kind === "videoinput")
+      
+      console.log("📹 Found video devices:", videoDevices.length)
       setHasCamera(videoDevices.length > 0)
+      
+      if (videoDevices.length === 0) {
+        setError("Tidak ada kamera yang terdeteksi")
+      }
     } catch (error) {
+      console.error("❌ Error checking camera availability:", error)
       setHasCamera(false)
+      setError("Gagal mendeteksi kamera")
     }
   }
 
   const startCamera = async () => {
-    try {
-      setError(null)
-      setLastDetectedCode(null)
-      setLastCodeType(null)
-      setDetectionResults([])
-      setScanCount(0)
+    if (isStartingCamera) return
+    
+    setIsStartingCamera(true)
+    setError(null)
+    setLastDetectedCode(null)
+    setLastCodeType(null)
+    setDetectionResults([])
+    setScanCount(0)
 
-      // Request camera access with high resolution
+    try {
+      console.log("🎥 Starting camera...")
+
+      // Try different camera constraints
       const constraints = {
         video: {
-          facingMode: "environment",
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-          frameRate: { ideal: 30, min: 15 },
+          facingMode: "environment", // Prefer back camera
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 },
+          frameRate: { ideal: 30, min: 10 },
         },
       }
 
+      console.log("📹 Requesting camera access with constraints:", constraints)
       const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      
+      console.log("✅ Camera stream obtained:", stream)
+      console.log("📹 Stream tracks:", stream.getTracks().map(track => ({ kind: track.kind, enabled: track.enabled })))
 
       if (videoRef.current) {
+        console.log("📹 Setting video srcObject...")
         videoRef.current.srcObject = stream
         streamRef.current = stream
 
+        // Add event listeners for debugging
         videoRef.current.onloadedmetadata = () => {
+          console.log("📹 Video metadata loaded")
           if (videoRef.current) {
+            console.log("📹 Video dimensions:", videoRef.current.videoWidth, "x", videoRef.current.videoHeight)
+            console.log("📹 Video readyState:", videoRef.current.readyState)
+            
             videoRef.current.play().then(() => {
+              console.log("▶️ Video started playing")
               setCameraActive(true)
               onScanningChange(true) // Auto-start scanning when camera is ready
+              
+              toast({
+                title: "Kamera Aktif",
+                description: "Scanner siap mendeteksi QR Code dan Barcode",
+              })
+            }).catch((playError) => {
+              console.error("❌ Error playing video:", playError)
+              setError("Gagal memulai video kamera")
+              stopCamera()
             })
           }
         }
-      }
 
-      toast({
-        title: "Kamera Aktif",
-        description: "Scanner siap mendeteksi QR Code dan Barcode",
-      })
+        videoRef.current.oncanplay = () => {
+          console.log("▶️ Video can play")
+        }
+
+        videoRef.current.oncanplaythrough = () => {
+          console.log("▶️ Video can play through")
+        }
+
+        videoRef.current.onerror = (error) => {
+          console.error("❌ Video error:", error)
+          setError("Error pada video kamera")
+          stopCamera()
+        }
+
+        // Force video to load
+        videoRef.current.load()
+      } else {
+        console.error("❌ Video ref not available")
+        setError("Element video tidak tersedia")
+        stopCamera()
+      }
     } catch (error) {
-      setError("Gagal mengakses kamera. Pastikan izin kamera telah diberikan.")
+      console.error("❌ Camera access error:", error)
+      
+      let errorMessage = "Gagal mengakses kamera"
+      
+      if (error instanceof Error) {
+        if (error.name === 'NotAllowedError') {
+          errorMessage = "Izin kamera ditolak. Silakan berikan izin kamera di browser."
+        } else if (error.name === 'NotFoundError') {
+          errorMessage = "Tidak ada kamera yang ditemukan."
+        } else if (error.name === 'NotReadableError') {
+          errorMessage = "Kamera sedang digunakan aplikasi lain."
+        } else if (error.name === 'OverconstrainedError') {
+          errorMessage = "Kamera tidak mendukung resolusi yang diminta."
+        } else {
+          errorMessage = `Error kamera: ${error.message}`
+        }
+      }
+      
+      setError(errorMessage)
       setCameraActive(false)
       onScanningChange(false)
+      
+      toast({
+        title: "Error Kamera",
+        description: errorMessage,
+        variant: "destructive",
+      })
+    } finally {
+      setIsStartingCamera(false)
     }
   }
 
   const stopCamera = () => {
+    console.log("🛑 Stopping camera...")
+    
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
+      streamRef.current.getTracks().forEach((track) => {
+        console.log("🛑 Stopping track:", track.kind)
+        track.stop()
+      })
       streamRef.current = null
     }
 
@@ -131,12 +235,14 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
 
     // Scan every 200ms for better performance
     scanIntervalRef.current = setInterval(detectCodeFromCamera, 200)
+    console.log("🔍 Started code detection")
   }
 
   const stopCodeDetection = () => {
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current)
       scanIntervalRef.current = null
+      console.log("🛑 Stopped code detection")
     }
   }
 
@@ -349,9 +455,22 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
         {/* Camera Controls */}
         <div className="flex items-center gap-4">
           {!cameraActive ? (
-            <Button onClick={startCamera} className="bg-blue-600 hover:bg-blue-700 text-white">
-              <Power className="h-4 w-4 mr-2" />
-              Aktifkan Kamera
+            <Button 
+              onClick={startCamera} 
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              disabled={isStartingCamera}
+            >
+              {isStartingCamera ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Memulai Kamera...
+                </>
+              ) : (
+                <>
+                  <Power className="h-4 w-4 mr-2" />
+                  Aktifkan Kamera
+                </>
+              )}
             </Button>
           ) : (
             <Button onClick={stopCamera} variant="destructive">
@@ -393,12 +512,43 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
               autoPlay
               playsInline
               muted
-              className="w-full h-64 object-cover rounded-lg border-2 border-gray-200"
+              className="w-full h-64 object-cover rounded-lg border-2 border-gray-200 bg-gray-100"
               style={{
                 filter: lastDetectedCode ? "brightness(1.2) contrast(1.1)" : "none",
               }}
+              onLoadedMetadata={() => {
+                console.log("📹 Video metadata loaded successfully")
+                if (videoRef.current) {
+                  console.log("📹 Video dimensions:", videoRef.current.videoWidth, "x", videoRef.current.videoHeight)
+                }
+              }}
+              onCanPlay={() => {
+                console.log("▶️ Video can play")
+              }}
+              onError={(e) => {
+                console.error("❌ Video error:", e)
+              }}
             />
             <canvas ref={canvasRef} className="hidden" />
+            
+            {/* Fallback content if video doesn't load */}
+            {videoRef.current && videoRef.current.readyState < 2 && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-100 rounded-lg">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                  <p className="text-gray-600">Memuat kamera...</p>
+                </div>
+              </div>
+            )}
+            
+            {/* Video status indicator */}
+            <div className="absolute top-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-xs">
+              {videoRef.current ? (
+                videoRef.current.readyState >= 2 ? "Video Ready" : "Loading Video..."
+              ) : (
+                "No Video Element"
+              )}
+            </div>
             
             {/* Scanning Overlay */}
             {isScanning && (
@@ -424,6 +574,17 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
           </div>
         )}
 
+        {/* Camera not active state */}
+        {!cameraActive && (
+          <div className="w-full h-64 bg-gray-100 rounded-lg border-2 border-gray-200 flex items-center justify-center">
+            <div className="text-center">
+              <Camera className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-600 mb-2">Kamera belum aktif</p>
+              <p className="text-sm text-gray-500">Klik "Aktifkan Kamera" untuk memulai</p>
+            </div>
+          </div>
+        )}
+
         {/* Error Display */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -431,6 +592,14 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
               <AlertCircle className="h-4 w-4" />
               <span className="text-sm">{error}</span>
             </div>
+            <Button 
+              onClick={startCamera} 
+              className="mt-2 bg-blue-600 hover:bg-blue-700 text-white" 
+              size="sm"
+              disabled={isStartingCamera}
+            >
+              Coba Lagi
+            </Button>
           </div>
         )}
 
