@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { type Participant, dbHelpers } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { Upload, QrCode, Search, CheckCircle, X, AlertCircle, BarChart3, Camera, Flashlight, ArrowLeft } from "lucide-react"
+import { Upload, QrCode, Search, CheckCircle, X, AlertCircle, BarChart3, Camera } from "lucide-react"
 import { BarcodeScanner } from "./barcode-scanner-simple"
 import { processBarcodeImage, type BarcodeProcessResult } from "@/lib/barcode-image-processor"
 import { Switch } from "@/components/ui/switch"
@@ -30,8 +30,30 @@ export function AdminScanner() {
   // Code display modal state
   const [showCodeModal, setShowCodeModal] = useState(false)
 
-  const searchParticipant = async (code: string) => {
+  // OPTIMIZED: Cache untuk menghindari duplicate API calls
+  const participantCache = useRef<Map<string, Participant>>(new Map())
+  const lastProcessedCode = useRef<string>("")
+
+  // OPTIMIZED: Debounce untuk menghindari spam API calls
+  const debounceTimeout = useRef<NodeJS.Timeout | null>(null)
+
+  // OPTIMIZED: Memoized search function dengan caching
+  const searchParticipant = useCallback(async (code: string, skipToast = false) => {
     if (!code.trim()) return null
+
+    // Check cache first untuk instant response
+    if (participantCache.current.has(code)) {
+      const cachedParticipant = participantCache.current.get(code)!
+      setFoundParticipant(cachedParticipant)
+      if (!skipToast) {
+        toast({
+          title: "Peserta Ditemukan (Cache)",
+          description: `${cachedParticipant.name} - ${cachedParticipant.participant_number}`,
+          duration: 2000,
+        })
+      }
+      return cachedParticipant
+    }
 
     setLoading(true)
     try {
@@ -39,165 +61,195 @@ export function AdminScanner() {
 
       if (error || !data) {
         setFoundParticipant(null)
-        toast({
-          title: "Peserta Tidak Ditemukan",
-          description: `Nomor peserta "${code}" tidak terdaftar`,
-          variant: "destructive",
-        })
+        if (!skipToast) {
+          toast({
+            title: "Peserta Tidak Ditemukan",
+            description: `Nomor peserta "${code}" tidak terdaftar`,
+            variant: "destructive",
+            duration: 3000,
+          })
+        }
         return null
       }
 
+      // Cache the result untuk future calls
+      participantCache.current.set(code, data)
       setFoundParticipant(data)
-      toast({
-        title: "Peserta Ditemukan",
-        description: `${data.name} - ${data.participant_number}`,
-      })
+      
+      if (!skipToast) {
+        toast({
+          title: "✅ Peserta Ditemukan",
+          description: `${data.name} - ${data.participant_number}`,
+          duration: 2000,
+        })
+      }
 
-      return data // Return participant data for auto-attendance
+      return data
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "Gagal mencari peserta",
-        variant: "destructive",
-      })
+      if (!skipToast) {
+        toast({
+          title: "Error",
+          description: "Gagal mencari peserta",
+          variant: "destructive",
+        })
+      }
       return null
     } finally {
       setLoading(false)
     }
-  }
+  }, [toast])
 
-  const handleBarcodeDetected = async (barcode: string) => {
-    console.log("🔍 BARCODE DETECTED:", barcode)
-    
-    // Validate barcode format to ensure accuracy
-    const cleanBarcode = barcode.trim()
-    if (!cleanBarcode) {
-      console.log("❌ Empty barcode detected, ignoring...")
-      return
+  // OPTIMIZED: Fast attendance update dengan optimistic UI update
+  const fastAttendanceUpdate = useCallback(async (participant: Participant) => {
+    if (participant.is_present) {
+      toast({
+        title: "ℹ️ Sudah Hadir",
+        description: `${participant.name} sudah tercatat hadir sebelumnya`,
+        duration: 2000,
+      })
+      return participant
     }
-    
-    console.log("✅ Processing barcode:", cleanBarcode)
-    setScannedCode(cleanBarcode)
-    
-    const participant = await searchParticipant(cleanBarcode)
 
-    // Keep scanning active - DON'T stop automatically
-    // User must manually stop scanner
-    console.log("🔄 Scanner remains active - waiting for user to stop manually")
+    // OPTIMISTIC UPDATE: Update UI immediately
+    const optimisticParticipant = { ...participant, is_present: true, attended_at: new Date().toISOString() }
+    setFoundParticipant(optimisticParticipant)
+    participantCache.current.set(participant.participant_number, optimisticParticipant)
 
+    // Show success immediately
     toast({
-      title: "🎯 Kode Terdeteksi!",
-      description: `${cleanBarcode} - Scanner tetap aktif`,
+      title: "🎯 Hadir Tercatat!",
+      description: `${participant.name} - Kehadiran berhasil dicatat`,
       duration: 3000,
     })
 
-    // AUTO-ATTENDANCE: Mark attendance automatically after successful detection
-    if (autoAttendanceEnabled && participant && !participant.is_present) {
-      try {
-        console.log("🎯 AUTO-ATTENDANCE: Marking attendance for", participant.participant_number)
-
-        const { error } = await dbHelpers.updateAttendance(participant.id, true)
-
-        if (error) throw error
-
+    // Background API call - tidak blocking UI
+    try {
+      const { error } = await dbHelpers.updateAttendance(participant.id, true)
+      
+      if (error) {
+        // Rollback optimistic update jika gagal
+        setFoundParticipant(participant)
+        participantCache.current.set(participant.participant_number, participant)
+        
         toast({
-          title: "✅ Auto-Attendance Success!",
-          description: `${participant.name} telah ditandai HADIR secara otomatis`,
-          duration: 4000,
-        })
-
-        // Refresh participant data to show updated status
-        await searchParticipant(cleanBarcode)
-      } catch (error) {
-        console.error("Auto-attendance error:", error)
-        toast({
-          title: "Auto-Attendance Error",
-          description: "Kode terdeteksi tapi gagal update kehadiran. Silakan klik tombol manual.",
+          title: "❌ Gagal Update Database",
+          description: "Silakan coba lagi atau gunakan tombol manual",
           variant: "destructive",
         })
+        return participant
       }
-    } else if (autoAttendanceEnabled && participant && participant.is_present) {
+
+      // Update cache dengan data terbaru dari server
+      const updatedParticipant = { ...optimisticParticipant }
+      participantCache.current.set(participant.participant_number, updatedParticipant)
+      
+    } catch (error) {
+      console.error("Background attendance update error:", error)
+      // Rollback on error
+      setFoundParticipant(participant)
+      participantCache.current.set(participant.participant_number, participant)
+      
       toast({
-        title: "ℹ️ Already Present",
-        description: `${participant.name} sudah tercatat hadir sebelumnya`,
-        duration: 3000,
+        title: "❌ Network Error",
+        description: "Silakan periksa koneksi internet",
+        variant: "destructive",
       })
     }
-  }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    return optimisticParticipant
+  }, [toast])
+
+  // OPTIMIZED: Ultra-fast barcode handler dengan immediate UI update
+  const handleBarcodeDetected = useCallback(async (barcode: string) => {
+    const cleanBarcode = barcode.trim()
+    if (!cleanBarcode) return
+
+    // Skip jika kode sama dengan yang sebelumnya dalam 2 detik terakhir
+    if (lastProcessedCode.current === cleanBarcode) {
+      console.log("🔄 Skipping duplicate code:", cleanBarcode)
+      return
+    }
+
+    console.log("🎯 FAST PROCESSING:", cleanBarcode)
+    lastProcessedCode.current = cleanBarcode
+
+    // Clear timeout untuk reset duplicate protection
+    if (debounceTimeout.current) {
+      clearTimeout(debounceTimeout.current)
+    }
+    debounceTimeout.current = setTimeout(() => {
+      lastProcessedCode.current = ""
+    }, 2000)
+
+    // INSTANT UI UPDATE
+    setScannedCode(cleanBarcode)
+
+    // IMMEDIATE: Show detection toast
+    toast({
+      title: "🎯 Kode Terdeteksi!",
+      description: `${cleanBarcode} - Mencari data peserta...`,
+      duration: 2000,
+    })
+
+    // FAST: Search participant dengan cache
+    const participant = await searchParticipant(cleanBarcode, true)
+
+    if (!participant) return
+
+    // AUTO-ATTENDANCE: Immediate UI update dengan optimistic update
+    if (autoAttendanceEnabled) {
+      await fastAttendanceUpdate(participant)
+    }
+
+  }, [searchParticipant, fastAttendanceUpdate, autoAttendanceEnabled, toast])
+
+  // OPTIMIZED: Fast file upload handler
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-
-    console.log("🔍 FILE UPLOAD: Starting code image processing...")
 
     setUploadLoading(true)
     setUploadResult(null)
 
     try {
-      // Process the uploaded image
-      const result = await processBarcodeImage(file)
+      // Show immediate feedback
+      toast({
+        title: "📸 Memproses Gambar...",
+        description: "Mendeteksi QR Code atau Barcode",
+        duration: 2000,
+      })
 
-      console.log("🔍 FILE UPLOAD: Processing result:", result)
+      const result = await processBarcodeImage(file)
       setUploadResult(result)
 
       if (result.success && result.barcode) {
-        // Set the detected code and search for participant
-        setScannedCode(result.barcode)
-        const participant = await searchParticipant(result.barcode)
+        const cleanBarcode = result.barcode.trim()
+        
+        // INSTANT UI UPDATE
+        setScannedCode(cleanBarcode)
 
         const codeTypeText = result.codeType === "qr" ? "QR Code" : "Barcode"
         toast({
-          title: `${codeTypeText} Terdeteksi dari File`,
-          description: `Nomor peserta: ${result.barcode}`,
+          title: `✅ ${codeTypeText} Terdeteksi!`,
+          description: `${cleanBarcode} - Mencari data peserta...`,
+          duration: 2000,
         })
 
-        // AUTO-ATTENDANCE: Mark attendance automatically after successful detection
-        if (autoAttendanceEnabled && participant && !participant.is_present) {
-          try {
-            console.log("🎯 AUTO-ATTENDANCE: Marking attendance for", participant.participant_number)
-
-            const { error } = await dbHelpers.updateAttendance(participant.id, true)
-
-            if (error) throw error
-
-            toast({
-              title: "✅ Auto-Attendance Success!",
-              description: `${participant.name} telah ditandai HADIR secara otomatis`,
-            })
-
-            // Refresh participant data to show updated status
-            await searchParticipant(result.barcode)
-          } catch (error) {
-            console.error("Auto-attendance error:", error)
-            toast({
-              title: "Auto-Attendance Error",
-              description: "Kode terdeteksi tapi gagal update kehadiran. Silakan klik tombol manual.",
-              variant: "destructive",
-            })
-          }
-        } else if (autoAttendanceEnabled && participant && participant.is_present) {
-          toast({
-            title: "ℹ️ Already Present",
-            description: `${participant.name} sudah tercatat hadir sebelumnya`,
-          })
+        // FAST: Search and auto-attendance
+        const participant = await searchParticipant(cleanBarcode, true)
+        
+        if (autoAttendanceEnabled && participant) {
+          await fastAttendanceUpdate(participant)
         }
       } else {
         toast({
-          title: "Kode Tidak Terdeteksi",
+          title: "❌ Kode Tidak Terdeteksi",
           description: result.error || "Tidak dapat membaca QR Code atau Barcode dari gambar",
           variant: "destructive",
         })
       }
     } catch (error) {
-      console.error("🔍 FILE UPLOAD: Error processing image:", error)
-
-      setUploadResult({
-        success: false,
-        error: `Error processing image: ${error}`,
-        debugInfo: [`❌ Processing failed: ${error}`],
-      })
-
+      console.error("File upload error:", error)
       toast({
         title: "Error",
         description: "Gagal memproses gambar kode",
@@ -205,80 +257,195 @@ export function AdminScanner() {
       })
     } finally {
       setUploadLoading(false)
-
       // Clear file input
       if (fileInputRef.current) {
         fileInputRef.current.value = ""
       }
     }
-  }
+  }, [searchParticipant, fastAttendanceUpdate, autoAttendanceEnabled, toast])
 
-  const markAttendance = async (participantId: string, currentStatus: boolean) => {
+  // OPTIMIZED: Manual attendance dengan optimistic update
+  const markAttendance = useCallback(async (participantId: string, currentStatus: boolean) => {
+    if (!foundParticipant) return
+
+    // Optimistic update
+    const newStatus = !currentStatus
+    const optimisticParticipant = { 
+      ...foundParticipant, 
+      is_present: newStatus,
+      attended_at: newStatus ? new Date().toISOString() : null
+    }
+    
+    setFoundParticipant(optimisticParticipant)
+    participantCache.current.set(foundParticipant.participant_number, optimisticParticipant)
+
+    // Immediate feedback
+    toast({
+      title: "Update Cepat",
+      description: `Kehadiran ${newStatus ? "dicatat" : "dibatalkan"} - Menyimpan ke database...`,
+    })
+
     try {
-      const { error } = await dbHelpers.updateAttendance(participantId, !currentStatus)
+      const { error } = await dbHelpers.updateAttendance(participantId, newStatus)
 
       if (error) throw error
 
-      const currentTime = new Date().toISOString()
       toast({
-        title: "Berhasil",
-        description: `Kehadiran ${!currentStatus ? "dicatat" : "dibatalkan"} pada ${new Date(currentTime).toLocaleString("id-ID")}`,
+        title: "✅ Berhasil",
+        description: `Kehadiran ${newStatus ? "dicatat" : "dibatalkan"} pada ${new Date().toLocaleString("id-ID")}`,
       })
-
-      // Refresh participant data
-      searchParticipant(foundParticipant?.participant_number || "")
     } catch (error) {
+      // Rollback optimistic update
+      setFoundParticipant(foundParticipant)
+      participantCache.current.set(foundParticipant.participant_number, foundParticipant)
+      
       toast({
         title: "Error",
-        description: "Gagal mengubah status kehadiran",
+        description: "Gagal mengubah status kehadiran - perubahan dibatalkan",
         variant: "destructive",
       })
     }
-  }
+  }, [foundParticipant, toast])
 
-  const handleShowCodes = () => {
+  const handleShowCodes = useCallback(() => {
     if (!foundParticipant) return
     setShowCodeModal(true)
-  }
+  }, [foundParticipant])
 
-  const clearUploadResult = () => {
+  const clearUploadResult = useCallback(() => {
     setUploadResult(null)
-  }
+  }, [])
 
-  // FIXED: Clean scanner control - langsung start/stop tanpa UI berbelit
-  const toggleScanner = () => {
+  // OPTIMIZED: Fast scanner toggle
+  const toggleScanner = useCallback(() => {
     if (isScanning) {
-      console.log("🛑 STOPPING SCANNER...")
       setIsScanning(false)
       toast({
-        title: "Scanner Dimatikan",
+        title: "🛑 Scanner Dimatikan",
         description: "Kamera telah dinonaktifkan",
+        duration: 2000,
       })
     } else {
-      console.log("🎯 STARTING SCANNER...")
-      setIsScanning(true)
+      // Clear previous data for fresh start
       setFoundParticipant(null)
       setScannedCode("")
       setUploadResult(null)
+      lastProcessedCode.current = ""
+      
+      setIsScanning(true)
       toast({
-        title: "Scanner Aktif",
+        title: "🎯 Scanner Aktif",
         description: "Kamera sedang diaktifkan untuk scanning",
+        duration: 2000,
       })
     }
-  }
+  }, [isScanning, toast])
+
+  // OPTIMIZED: Memoized participant display untuk menghindari re-render
+  const participantDisplay = useMemo(() => {
+    if (!foundParticipant) {
+      return (
+        <div className="text-center py-8">
+          <div className="flex justify-center items-center gap-2 mb-3">
+            <QrCode className="h-12 w-12 text-gray-400" />
+            <BarChart3 className="h-12 w-12 text-gray-400" />
+          </div>
+          <p className="text-gray-500">Scan QR Code/Barcode atau masukkan kode peserta</p>
+          <p className="text-sm text-gray-400 mt-1">Hasil akan muncul di sini dengan cepat</p>
+        </div>
+      )
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 transition-all duration-200">
+          <div className="space-y-3">
+            <div>
+              <p className="text-sm text-gray-500">Nomor Peserta</p>
+              <p className="font-semibold text-lg">{foundParticipant.participant_number}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Nama</p>
+              <p className="font-semibold">{foundParticipant.name}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Kampus</p>
+              <p className="font-semibold">{foundParticipant.campus}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Status Kehadiran</p>
+              <Badge 
+                variant={foundParticipant.is_present ? "default" : "secondary"}
+                className={foundParticipant.is_present ? "bg-green-100 text-green-800" : ""}
+              >
+                {foundParticipant.is_present ? "✅ Sudah Hadir" : "❌ Belum Hadir"}
+              </Badge>
+            </div>
+            {foundParticipant.attended_at && (
+              <div>
+                <p className="text-sm text-gray-500">Waktu Hadir</p>
+                <p className="font-semibold">
+                  {new Date(foundParticipant.attended_at).toLocaleString("id-ID")}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Button
+            onClick={() => markAttendance(foundParticipant.id, foundParticipant.is_present)}
+            variant={foundParticipant.is_present ? "destructive" : "default"}
+            className={foundParticipant.is_present ? "" : "bg-blue-600 hover:bg-blue-700 text-white"}
+            size="default"
+          >
+            {foundParticipant.is_present ? (
+              <>
+                <X className="h-4 w-4 mr-2" />
+                Batalkan Kehadiran
+              </>
+            ) : (
+              <>
+                <CheckCircle className="h-4 w-4 mr-2" />
+                Tandai Hadir
+              </>
+            )}
+          </Button>
+          
+          <Button onClick={handleShowCodes} variant="outline" className="bg-transparent">
+            <QrCode className="h-4 w-4 mr-2" />
+            Lihat QR & Barcode
+          </Button>
+          
+          <Button
+            onClick={() => {
+              setFoundParticipant(null)
+              setScannedCode("")
+              lastProcessedCode.current = ""
+            }}
+            variant="outline"
+          >
+            Reset
+          </Button>
+        </div>
+      </div>
+    )
+  }, [foundParticipant, markAttendance, handleShowCodes])
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Page Header */}
       <div className="space-y-2">
         <h1 className="text-2xl sm:text-3xl font-bold text-blue-900">Scanner Absensi</h1>
-        <p className="text-gray-600">Scan QR Code atau Barcode peserta untuk absensi</p>
+        <p className="text-gray-600">Scan QR Code atau Barcode peserta untuk absensi real-time</p>
       </div>
 
       {/* Upload Result Display */}
       {uploadResult && (
         <Card
-          className={`shadow-md border-2 ${uploadResult.success ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"}`}
+          className={`shadow-md border-2 transition-all duration-300 ${
+            uploadResult.success ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"
+          }`}
         >
           <CardContent className="p-4">
             <div className="flex items-start gap-3">
@@ -307,20 +474,20 @@ export function AdminScanner() {
                 {uploadResult.error && <p className="text-sm text-red-700 mt-1">{uploadResult.error}</p>}
               </div>
               <Button variant="ghost" size="sm" onClick={clearUploadResult}>
-                ×
+                <X className="h-4 w-4" />
               </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Auto-Attendance Toggle */}
+      {/* Auto-Attendance Toggle - Optimized */}
       <Card className="shadow-md border-blue-200">
         <CardContent className="p-4">
           <div className="flex items-center justify-between">
             <div>
               <h4 className="font-medium text-blue-900">Auto-Attendance</h4>
-              <p className="text-sm text-gray-600">Otomatis tandai hadir setelah QR Code atau Barcode terdeteksi</p>
+              <p className="text-sm text-gray-600">Instant absensi ketika QR Code atau Barcode terdeteksi</p>
             </div>
             <div className="flex items-center gap-2">
               <Switch
@@ -340,9 +507,8 @@ export function AdminScanner() {
       </Card>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Scanner Section */}
+        {/* Scanner Section - Optimized */}
         <div className="space-y-6">
-          {/* FIXED: Clean Camera Scanner UI */}
           <Card className="shadow-md border-blue-200">
             <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
               <CardTitle className="flex items-center gap-2 text-lg font-bold text-blue-700">
@@ -350,12 +516,12 @@ export function AdminScanner() {
                 Real-time Scanner
               </CardTitle>
               <CardDescription className="text-gray-500">
-                Scan QR Code atau Barcode secara langsung dengan kamera
+                Scanner super cepat dengan deteksi instant
               </CardDescription>
             </CardHeader>
             <CardContent className="p-6">
               <div className="space-y-4">
-                {/* FIXED: Single Clean Button */}
+                {/* Scanner Control */}
                 <div className="flex items-center justify-between">
                   <Button
                     onClick={toggleScanner}
@@ -363,7 +529,7 @@ export function AdminScanner() {
                       isScanning 
                         ? "bg-red-600 hover:bg-red-700 text-white" 
                         : "bg-blue-600 hover:bg-blue-700 text-white"
-                    } px-6 py-2`}
+                    } px-6 py-2 transition-all duration-200`}
                   >
                     {isScanning ? (
                       <>
@@ -381,61 +547,57 @@ export function AdminScanner() {
                   {/* Status Badges */}
                   <div className="flex items-center gap-2">
                     {isScanning && (
-                      <Badge className="bg-green-100 text-green-800 px-3 py-1">
-                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse mr-2" />
-                        Scanning Active
+                      <Badge className="bg-green-100 text-green-800 px-3 py-1 animate-pulse">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-ping mr-2" />
+                        Scanning Live
                       </Badge>
                     )}
                     {autoAttendanceEnabled && isScanning && (
                       <Badge className="bg-blue-100 text-blue-800 px-2 py-1">
-                        Auto-Attendance ON
+                        🎯 Auto ON
                       </Badge>
                     )}
                   </div>
                 </div>
 
-                {/* FIXED: Clean Scanner Display */}
+                {/* Scanner Display - Optimized */}
                 <div className="relative bg-gray-100 rounded-lg overflow-hidden">
                   {isScanning ? (
                     <div className="relative">
                       {/* Auto-attendance indicator overlay */}
                       {autoAttendanceEnabled && (
                         <div className="absolute top-3 left-3 right-3 z-10">
-                          <div className="bg-green-500 bg-opacity-95 backdrop-blur-sm rounded-lg p-2 text-white text-center text-sm shadow-lg">
-                            <p className="font-medium">✅ Auto-Attendance Aktif</p>
-                            <p className="text-xs opacity-90">Kehadiran otomatis tercatat saat kode terdeteksi</p>
-                          </div>
                         </div>
                       )}
                       
-                      {/* Clean Barcode Scanner Component */}
+                      {/* Optimized Barcode Scanner */}
                       <BarcodeScanner
                         onBarcodeDetected={handleBarcodeDetected}
                         isScanning={isScanning}
                         onScanningChange={setIsScanning}
                       />
                       
-                      {/* Scanner Frame Overlay */}
+                      {/* Enhanced Scanner Frame */}
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="relative">
                           <div className="w-56 h-56 relative">
-                            {/* Corner indicators */}
-                            <div className="absolute top-0 left-0 w-8 h-8 border-l-4 border-t-4 border-blue-500 rounded-tl-lg"></div>
-                            <div className="absolute top-0 right-0 w-8 h-8 border-r-4 border-t-4 border-blue-500 rounded-tr-lg"></div>
-                            <div className="absolute bottom-0 left-0 w-8 h-8 border-l-4 border-b-4 border-blue-500 rounded-bl-lg"></div>
-                            <div className="absolute bottom-0 right-0 w-8 h-8 border-r-4 border-b-4 border-blue-500 rounded-br-lg"></div>
+                            {/* Animated corner indicators */}
+                            <div className="absolute top-0 left-0 w-8 h-8 border-l-4 border-t-4 border-blue-500 rounded-tl-lg animate-pulse"></div>
+                            <div className="absolute top-0 right-0 w-8 h-8 border-r-4 border-t-4 border-blue-500 rounded-tr-lg animate-pulse"></div>
+                            <div className="absolute bottom-0 left-0 w-8 h-8 border-l-4 border-b-4 border-blue-500 rounded-bl-lg animate-pulse"></div>
+                            <div className="absolute bottom-0 right-0 w-8 h-8 border-r-4 border-b-4 border-blue-500 rounded-br-lg animate-pulse"></div>
                             
-                            {/* Scanning line animation */}
-                            <div className="absolute inset-x-6 top-1/2 h-1 bg-blue-500 animate-pulse rounded-full"></div>
+                            {/* Fast scanning line animation */}
+                            <div className="absolute inset-x-6 top-1/2 h-1 bg-blue-500 animate-ping rounded-full"></div>
                           </div>
                         </div>
                       </div>
 
-                      {/* Clean Instructions */}
-                      <div className="absolute bottom-4 left-4 right-4 text-center text-white bg-black bg-opacity-60 rounded-lg p-3">
-                        <p className="text-sm font-medium">📱 Arahkan kamera ke QR Code atau Barcode</p>
+                      {/* Enhanced Instructions */}
+                      <div className="absolute bottom-4 left-4 right-4 text-center text-white bg-black bg-opacity-70 rounded-lg p-3">
+                        <p className="text-sm font-medium">Scanner Super Cepat Aktif</p>
                         <p className="text-xs mt-1 opacity-90">
-                          Format: UI01, ITB01, UGM01, UNPAD01, dll
+                          Arahkan ke QR/Barcode → Instant hasil!
                         </p>
                       </div>
                     </div>
@@ -445,13 +607,13 @@ export function AdminScanner() {
                         <Camera className="h-16 w-16 mx-auto mb-4 text-gray-300" />
                         <h3 className="text-lg font-semibold text-gray-700 mb-2">Scanner Siap Digunakan</h3>
                         <p className="text-sm text-gray-500 mb-4">
-                          Klik "Mulai Scanner" untuk mengaktifkan kamera dan mulai scanning
+                          Klik "Mulai Scanner" untuk aktivasi instant
                         </p>
                         <div className="bg-blue-50 rounded-lg p-3 text-xs text-blue-700">
-                          <p className="font-medium mb-1">✅ Mendukung:</p>
-                          <p>• QR Code & Barcode detection</p>
-                          <p>• Format UI01, ITB01, UGM01, UNPAD01</p>
-                          <p>• Auto-attendance otomatis</p>
+                          <p className="font-medium mb-1">Fitur Super Cepat:</p>
+                          <p>• Instant detection & response</p>
+                          <p>• Auto-attendance dalam milidetik</p>
+                          <p>• Cache untuk performa maksimal</p>
                         </div>
                       </div>
                     </div>
@@ -461,7 +623,7 @@ export function AdminScanner() {
             </CardContent>
           </Card>
 
-          {/* Manual Input & File Upload */}
+          {/* Manual Input & File Upload - Optimized */}
           <Card className="shadow-md">
             <CardHeader className="bg-white border-b">
               <CardTitle className="flex items-center gap-2 text-lg font-bold text-blue-700">
@@ -472,11 +634,11 @@ export function AdminScanner() {
                 Input Manual & Upload
               </CardTitle>
               <CardDescription className="text-gray-500">
-                Alternatif jika scanner kamera tidak berfungsi
+                Alternatif cepat jika scanner kamera tidak berfungsi
               </CardDescription>
             </CardHeader>
             <CardContent className="p-6 space-y-4">
-              {/* File Upload */}
+              {/* Fast File Upload */}
               <div className="space-y-2">
                 <Label htmlFor="file-upload" className="text-gray-700">
                   Upload Foto QR Code atau Barcode
@@ -485,7 +647,7 @@ export function AdminScanner() {
                   <Button
                     onClick={() => fileInputRef.current?.click()}
                     variant="outline"
-                    className="flex-1"
+                    className="flex-1 transition-all duration-200"
                     disabled={uploadLoading}
                   >
                     {uploadLoading ? (
@@ -496,18 +658,18 @@ export function AdminScanner() {
                     ) : (
                       <>
                         <Upload className="h-4 w-4 mr-2" />
-                        Pilih Foto QR/Barcode
+                        📸 Pilih Foto QR/Barcode
                       </>
                     )}
                   </Button>
                 </div>
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
                 <p className="text-xs text-gray-500">
-                  Supported: JPG, PNG, GIF, WebP. Pastikan QR Code atau Barcode terlihat jelas.
+                  Supported: JPG, PNG, GIF, WebP. Instant processing untuk deteksi cepat.
                 </p>
               </div>
 
-              {/* Manual Input */}
+              {/* Fast Manual Input */}
               <div className="border-t pt-4">
                 <Label htmlFor="manual-code" className="text-gray-700">
                   Atau Masukkan Kode Manual
@@ -523,13 +685,18 @@ export function AdminScanner() {
                         searchParticipant(scannedCode)
                       }
                     }}
+                    className="transition-all duration-200"
                   />
                   <Button
                     onClick={() => searchParticipant(scannedCode)}
                     disabled={loading}
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                    className="bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200"
                   >
-                    <Search className="h-4 w-4" />
+                    {loading ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    ) : (
+                      <Search className="h-4 w-4" />
+                    )}
                   </Button>
                 </div>
               </div>
@@ -537,92 +704,19 @@ export function AdminScanner() {
           </Card>
         </div>
 
-        {/* Result Section */}
+        {/* Result Section - Optimized for Speed */}
         <Card className="shadow-md">
           <CardHeader className="bg-white border-b">
             <CardTitle className="flex items-center gap-2 text-lg font-bold text-blue-700">
               <CheckCircle className="h-5 w-5" />
-              Hasil Scan
+              Hasil Scan Real-time
             </CardTitle>
-            <CardDescription className="text-gray-500">Informasi peserta dan status kehadiran</CardDescription>
+            <CardDescription className="text-gray-500">
+              Informasi peserta dan status kehadiran - Update instant
+            </CardDescription>
           </CardHeader>
           <CardContent className="p-6">
-            {foundParticipant ? (
-              <div className="space-y-4">
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="space-y-3">
-                    <div>
-                      <p className="text-sm text-gray-500">Nomor Peserta</p>
-                      <p className="font-semibold text-lg">{foundParticipant.participant_number}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Nama</p>
-                      <p className="font-semibold">{foundParticipant.name}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Kampus</p>
-                      <p className="font-semibold">{foundParticipant.campus}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Status Kehadiran</p>
-                      <Badge variant={foundParticipant.is_present ? "default" : "secondary"}>
-                        {foundParticipant.is_present ? "Sudah Hadir" : "Belum Hadir"}
-                      </Badge>
-                    </div>
-                    {foundParticipant.attended_at && (
-                      <div>
-                        <p className="text-sm text-gray-500">Waktu Hadir</p>
-                        <p className="font-semibold">
-                          {new Date(foundParticipant.attended_at).toLocaleString("id-ID")}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <Button
-                    onClick={() => markAttendance(foundParticipant.id, foundParticipant.is_present)}
-                    variant={foundParticipant.is_present ? "destructive" : "default"}
-                    className={foundParticipant.is_present ? "" : "bg-blue-600 hover:bg-blue-700 text-white"}
-                  >
-                    {foundParticipant.is_present ? (
-                      <>
-                        <X className="h-4 w-4 mr-2" />
-                        Batalkan Kehadiran
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle className="h-4 w-4 mr-2" />
-                        Tandai Hadir
-                      </>
-                    )}
-                  </Button>
-                  <Button onClick={handleShowCodes} variant="outline" className="bg-transparent">
-                    <QrCode className="h-4 w-4 mr-2" />
-                    Lihat QR & Barcode
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setFoundParticipant(null)
-                      setScannedCode("")
-                    }}
-                    variant="outline"
-                  >
-                    Reset
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <div className="flex justify-center items-center gap-2 mb-3">
-                  <QrCode className="h-12 w-12 text-gray-400" />
-                  <BarChart3 className="h-12 w-12 text-gray-400" />
-                </div>
-                <p className="text-gray-500">Scan QR Code/Barcode atau masukkan kode peserta</p>
-                <p className="text-sm text-gray-400 mt-1">Hasil akan muncul di sini</p>
-              </div>
-            )}
+            {participantDisplay}
           </CardContent>
         </Card>
       </div>
@@ -636,6 +730,7 @@ export function AdminScanner() {
           participantName={foundParticipant.name}
         />
       )}
+
     </div>
   )
 }
