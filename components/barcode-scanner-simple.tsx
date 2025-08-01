@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { Camera, Scan, AlertCircle, CheckCircle, Power, PowerOff } from "lucide-react"
+import jsQR from 'jsqr'
 
 interface BarcodeScannerProps {
   onBarcodeDetected: (barcode: string) => void
@@ -140,8 +141,31 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
     canvas.height = video.videoHeight
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const detectedBarcode = scanFullImageForBarcode(imageData)
 
+    // First try QR Code detection with jsQR
+    const qrCode = jsQR(imageData.data, imageData.width, imageData.height)
+    if (qrCode && qrCode.data && qrCode.data !== lastDetectedBarcode) {
+      // Validate QR code format
+      const validatedCode = validateParticipantCode(qrCode.data.trim())
+      if (validatedCode) {
+        const timestamp = new Date().toLocaleTimeString()
+        const logMessage = `[${timestamp}] 🎯 QR CODE DETECTED: ${validatedCode}`
+        setDebugInfo((prev) => [...prev.slice(-4), logMessage])
+        setLastDetectedBarcode(validatedCode)
+        onBarcodeDetected(validatedCode)
+        flashScanEffect()
+        toast({
+          title: "QR Code Terdeteksi!",
+          description: `Nomor peserta: ${validatedCode}`,
+          duration: 2000,
+        })
+        setTimeout(() => setLastDetectedBarcode(null), 3000)
+        return
+      }
+    }
+
+    // If no QR code, try barcode detection
+    const detectedBarcode = scanFullImageForBarcode(imageData)
     if (detectedBarcode && detectedBarcode !== lastDetectedBarcode) {
       const timestamp = new Date().toLocaleTimeString()
       const logMessage = `[${timestamp}] 🎯 BARCODE DETECTED: ${detectedBarcode}`
@@ -158,25 +182,71 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
     }
   }
 
+  // FIXED: Use the same validation logic as barcode-image-processor.ts
+  const validateParticipantCode = (code: string): string | null => {
+    // Valid participant patterns - sama seperti di barcode-image-processor.ts
+    const participantPatterns = [
+      /^UI\d{2}$/i,
+      /^ITB\d{2}$/i,
+      /^UGM\d{2}$/i,
+      /^UNPAD\d{2}$/i,
+      /^ITS\d{2}$/i,
+      /^UNAIR\d{2}$/i,
+      /^UB\d{2}$/i,
+      /^UNDIP\d{2}$/i,
+      /^UNHAS\d{2}$/i,
+      /^UNS\d{2}$/i,
+      /^UNRI\d{2}$/i,
+      /^UNCEN\d{2}$/i,
+    ]
+
+    const upperCode = code.toUpperCase()
+    
+    for (const regex of participantPatterns) {
+      if (regex.test(upperCode)) {
+        console.log(`✅ Valid participant code detected: ${upperCode}`)
+        return upperCode
+      }
+    }
+
+    console.log(`❌ Invalid participant code format: ${code}`)
+    return null
+  }
+
   const scanFullImageForBarcode = (imageData: ImageData): string | null => {
     const data = imageData.data
     const width = imageData.width
     const height = imageData.height
 
-    for (let y = 0; y < height; y += 3) {
-      const result = scanLine(data, width, height, y, true)
-      if (result) return result
+    // FIXED: Focus on text area (bottom 40% of image where participant numbers appear)
+    const textStartY = Math.floor(height * 0.6)
+    const textEndY = height
+
+    console.log(`🔍 Scanning text area from y=${textStartY} to y=${textEndY}`)
+
+    // Scan horizontal lines in text area
+    for (let y = textStartY; y < textEndY; y += 2) {
+      const result = scanLineForText(data, width, height, y, true)
+      if (result) {
+        console.log(`✅ Found barcode in horizontal line at y=${y}: ${result}`)
+        return result
+      }
     }
 
-    for (let x = 0; x < width; x += 5) {
-      const result = scanLine(data, width, height, x, false)
-      if (result) return result
+    // Scan vertical lines if horizontal fails
+    for (let x = Math.floor(width * 0.1); x < Math.floor(width * 0.9); x += 3) {
+      const result = scanLineForText(data, width, height, x, false)
+      if (result) {
+        console.log(`✅ Found barcode in vertical line at x=${x}: ${result}`)
+        return result
+      }
     }
 
     return null
   }
 
-  const scanLine = (
+  // FIXED: Better text recognition logic
+  const scanLineForText = (
     data: Uint8ClampedArray,
     width: number,
     height: number,
@@ -190,33 +260,64 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
     for (let i = 0; i < limit; i++) {
       const x = isHorizontal ? i : index
       const y = isHorizontal ? index : i
+      
+      if (x >= width || y >= height) continue
+      
       const pixelIndex = (y * width + x) * 4
       const r = data[pixelIndex]
       const g = data[pixelIndex + 1]
       const b = data[pixelIndex + 2]
       const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b)
-      binaryPattern += gray < threshold ? "0" : "1"
+      binaryPattern += gray < threshold ? "1" : "0"
     }
 
-    return extractParticipantFromPattern(binaryPattern)
+    return extractParticipantFromBinaryPattern(binaryPattern)
   }
 
-  const extractParticipantFromPattern = (pattern: string): string | null => {
+  // FIXED: Use same logic as barcode-image-processor.ts
+  const extractParticipantFromBinaryPattern = (pattern: string): string | null => {
     const chunkSizes = [8, 7, 6, 5]
-    for (const size of chunkSizes) {
+    
+    for (const chunkSize of chunkSizes) {
       let text = ""
-      for (let i = 0; i < pattern.length - size + 1; i += size) {
-        const chunk = pattern.substring(i, i + size)
-        const charCode = Number.parseInt(chunk, 2)
-        if ((charCode >= 65 && charCode <= 90) || (charCode >= 48 && charCode <= 57)) {
-          text += String.fromCharCode(charCode)
-        } else if (charCode >= 97 && charCode <= 122) {
-          text += String.fromCharCode(charCode - 32)
+      
+      for (let i = 0; i <= pattern.length - chunkSize; i += chunkSize) {
+        const chunk = pattern.substring(i, i + chunkSize)
+        if (chunk.length === chunkSize) {
+          const charCode = parseInt(chunk, 2)
+          
+          // Convert to character if it's printable ASCII
+          if (charCode >= 32 && charCode <= 126) {
+            text += String.fromCharCode(charCode)
+          }
         }
       }
-      const match = text.match(/[A-Z]{2,}[0-9]{2}/g)
-      if (match) return match[0]
+
+      // Look for participant patterns in the extracted text
+      const participantPatterns = [
+        /UI\d{2}/gi,
+        /ITB\d{2}/gi,
+        /UGM\d{2}/gi,
+        /UNPAD\d{2}/gi,
+        /ITS\d{2}/gi,
+        /UNAIR\d{2}/gi,
+        /UB\d{2}/gi,
+        /UNDIP\d{2}/gi,
+        /UNHAS\d{2}/gi,
+        /UNS\d{2}/gi,
+        /UNRI\d{2}/gi,
+        /UNCEN\d{2}/gi,
+      ]
+
+      for (const regex of participantPatterns) {
+        const match = text.match(regex)
+        if (match) {
+          console.log(`🎯 Pattern found in ${chunkSize}-bit: "${match[0]}" from text: "${text}"`)
+          return match[0].toUpperCase()
+        }
+      }
     }
+
     return null
   }
 
@@ -308,6 +409,19 @@ export function BarcodeScanner({ onBarcodeDetected, isScanning, onScanningChange
         </div>
 
         <canvas ref={canvasRef} className="hidden" />
+
+        {/* Instructions */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+          <h4 className="font-medium text-blue-900 mb-2">Format Kode yang Didukung:</h4>
+          <div className="text-sm text-blue-700 grid grid-cols-2 gap-1">
+            <div>• UI01, UI02, UI03...</div>
+            <div>• ITB01, ITB02, ITB03...</div>
+            <div>• UGM01, UGM02, UGM03...</div>
+            <div>• UNPAD01, UNPAD02...</div>
+            <div>• ITS01, ITS02, ITS03...</div>
+            <div>• Dan format kampus lainnya</div>
+          </div>
+        </div>
       </CardContent>
     </Card>
   )

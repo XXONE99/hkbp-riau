@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { type Participant, dbHelpers } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { Upload, QrCode, Search, CheckCircle, X, AlertCircle, BarChart3 } from "lucide-react"
+import { Upload, QrCode, Search, CheckCircle, X, AlertCircle, BarChart3, Camera, Flashlight, ArrowLeft } from "lucide-react"
 import { BarcodeScanner } from "./barcode-scanner-simple"
 import { processBarcodeImage, type BarcodeProcessResult } from "@/lib/barcode-image-processor"
 import { Switch } from "@/components/ui/switch"
@@ -66,18 +66,63 @@ export function AdminScanner() {
     }
   }
 
-  const handleBarcodeDetected = (barcode: string) => {
-    console.log("Code detected:", barcode)
-    setScannedCode(barcode)
-    searchParticipant(barcode)
+  const handleBarcodeDetected = async (barcode: string) => {
+    console.log("🔍 BARCODE DETECTED:", barcode)
+    
+    // Validate barcode format to ensure accuracy
+    const cleanBarcode = barcode.trim()
+    if (!cleanBarcode) {
+      console.log("❌ Empty barcode detected, ignoring...")
+      return
+    }
+    
+    console.log("✅ Processing barcode:", cleanBarcode)
+    setScannedCode(cleanBarcode)
+    
+    const participant = await searchParticipant(cleanBarcode)
 
-    // Stop scanning after successful detection
-    setIsScanning(false)
+    // Keep scanning active - DON'T stop automatically
+    // User must manually stop scanner
+    console.log("🔄 Scanner remains active - waiting for user to stop manually")
 
     toast({
-      title: "Kode Terdeteksi",
-      description: `Mencari peserta dengan nomor: ${barcode}`,
+      title: "🎯 Kode Terdeteksi!",
+      description: `${cleanBarcode} - Scanner tetap aktif`,
+      duration: 3000,
     })
+
+    // AUTO-ATTENDANCE: Mark attendance automatically after successful detection
+    if (autoAttendanceEnabled && participant && !participant.is_present) {
+      try {
+        console.log("🎯 AUTO-ATTENDANCE: Marking attendance for", participant.participant_number)
+
+        const { error } = await dbHelpers.updateAttendance(participant.id, true)
+
+        if (error) throw error
+
+        toast({
+          title: "✅ Auto-Attendance Success!",
+          description: `${participant.name} telah ditandai HADIR secara otomatis`,
+          duration: 4000,
+        })
+
+        // Refresh participant data to show updated status
+        await searchParticipant(cleanBarcode)
+      } catch (error) {
+        console.error("Auto-attendance error:", error)
+        toast({
+          title: "Auto-Attendance Error",
+          description: "Kode terdeteksi tapi gagal update kehadiran. Silakan klik tombol manual.",
+          variant: "destructive",
+        })
+      }
+    } else if (autoAttendanceEnabled && participant && participant.is_present) {
+      toast({
+        title: "ℹ️ Already Present",
+        description: `${participant.name} sudah tercatat hadir sebelumnya`,
+        duration: 3000,
+      })
+    }
   }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -200,12 +245,35 @@ export function AdminScanner() {
     setUploadResult(null)
   }
 
+  const startScanning = () => {
+    console.log("🎯 STARTING SCANNER: Activating camera and scanning...")
+    setIsScanning(true)
+    setFoundParticipant(null)
+    setScannedCode("")
+    setUploadResult(null)
+    
+    toast({
+      title: "Scanner Aktif",
+      description: "Kamera sedang diaktifkan, arahkan ke QR Code atau Barcode",
+    })
+  }
+
+  const stopScanning = () => {
+    console.log("🛑 STOPPING SCANNER: Deactivating camera...")
+    setIsScanning(false)
+    
+    toast({
+      title: "Scanner Dimatikan",
+      description: "Kamera telah dimatikan",
+    })
+  }
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Page Header */}
       <div className="space-y-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-blue-900">Scan QR Code & Barcode</h1>
-        <p className="text-gray-600">Scan QR Code atau Barcode peserta untuk absensi manual</p>
+        <h1 className="text-2xl sm:text-3xl font-bold text-blue-900">Scanner Absensi</h1>
+        <p className="text-gray-600">Scan QR Code atau Barcode peserta untuk absensi</p>
       </div>
 
       {/* Upload Result Display */}
@@ -238,22 +306,6 @@ export function AdminScanner() {
                   )}
                 </h4>
                 {uploadResult.error && <p className="text-sm text-red-700 mt-1">{uploadResult.error}</p>}
-                {uploadResult.debugInfo && uploadResult.debugInfo.length > 0 && (
-                  <details className="mt-2">
-                    <summary
-                      className={`text-sm cursor-pointer ${uploadResult.success ? "text-green-700" : "text-red-700"}`}
-                    >
-                      Debug Information ({uploadResult.debugInfo.length} logs)
-                    </summary>
-                    <div className="mt-2 max-h-32 overflow-y-auto bg-white rounded border p-2">
-                      {uploadResult.debugInfo.map((log, index) => (
-                        <p key={index} className="text-xs font-mono text-gray-700 mb-1">
-                          {log}
-                        </p>
-                      ))}
-                    </div>
-                  </details>
-                )}
               </div>
               <Button variant="ghost" size="sm" onClick={clearUploadResult}>
                 ×
@@ -291,12 +343,101 @@ export function AdminScanner() {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Scanner Section */}
         <div className="space-y-6">
-          {/* Real-time Code Scanner */}
-          <BarcodeScanner
-            onBarcodeDetected={handleBarcodeDetected}
-            isScanning={isScanning}
-            onScanningChange={setIsScanning}
-          />
+          {/* Camera Scanner */}
+          <Card className="shadow-md border-blue-200">
+            <CardHeader className="bg-white border-b">
+              <CardTitle className="flex items-center gap-2 text-lg font-bold text-blue-700">
+                <Camera className="h-5 w-5" />
+                Camera Scanner
+              </CardTitle>
+              <CardDescription className="text-gray-500">
+                Gunakan kamera untuk scan QR Code atau Barcode secara real-time
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-4">
+              <div className="space-y-4">
+                {/* Scanner Controls */}
+                <div className="flex gap-2">
+                  <Button
+                    onClick={startScanning}
+                    disabled={isScanning}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white disabled:bg-green-600 disabled:cursor-not-allowed"
+                  >
+                    <Camera className="h-4 w-4 mr-2" />
+                    {isScanning ? "🟢 Scanner Aktif - Sedang Memindai..." : "Mulai Scanner"}
+                  </Button>
+                  {isScanning && (
+                    <Button onClick={stopScanning} variant="destructive" className="bg-red-600 hover:bg-red-700">
+                      <X className="h-4 w-4 mr-2" />
+                      Stop Scanner
+                    </Button>
+                  )}
+                </div>
+
+                {/* Scanner Display */}
+                <div className="relative bg-gray-100 rounded-lg overflow-hidden">
+                  {isScanning ? (
+                    <div className="relative">
+                      {/* Auto-attendance indicator */}
+                      {autoAttendanceEnabled && (
+                        <div className="absolute top-2 left-2 right-2 z-10">
+                          <div className="bg-green-500 bg-opacity-90 backdrop-blur-sm rounded-lg p-2 text-white text-center text-xs">
+                            <p className="font-medium">✅ Auto-Attendance Aktif</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Barcode Scanner Component with explicit props */}
+                      <BarcodeScanner
+                        onBarcodeDetected={handleBarcodeDetected}
+                        isScanning={isScanning}
+                        onScanningChange={setIsScanning}
+                      />
+                      
+                      {/* Scanner Overlay */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="relative">
+                          {/* Scanner Frame */}
+                          <div className="w-48 h-48 sm:w-64 sm:h-64 relative">
+                            {/* Corner indicators */}
+                            <div className="absolute top-0 left-0 w-6 h-6 border-l-3 border-t-3 border-white rounded-tl-lg"></div>
+                            <div className="absolute top-0 right-0 w-6 h-6 border-r-3 border-t-3 border-white rounded-tr-lg"></div>
+                            <div className="absolute bottom-0 left-0 w-6 h-6 border-l-3 border-b-3 border-white rounded-bl-lg"></div>
+                            <div className="absolute bottom-0 right-0 w-6 h-6 border-r-3 border-b-3 border-white rounded-br-lg"></div>
+                            
+                            {/* Scanning line animation */}
+                            <div className="absolute inset-x-4 top-1/2 h-0.5 bg-red-500 animate-pulse"></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Instructions */}
+                      <div className="absolute bottom-4 left-4 right-4 text-center text-white bg-black bg-opacity-50 rounded-lg p-2">
+                        <p className="text-sm font-medium">📱 Arahkan kamera ke QR Code atau Barcode</p>
+                        <p className="text-xs mt-1 opacity-90">
+                          Scanner akan terus aktif hingga Anda klik "Stop Scanner"
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="aspect-video flex items-center justify-center text-gray-500 bg-gray-100">
+                      <div className="text-center">
+                        <Camera className="h-12 w-12 mx-auto mb-3 text-gray-400" />
+                        <p className="text-sm font-medium mb-1">Scanner Siap Digunakan</p>
+                        <p className="text-xs text-gray-400">
+                          Klik "Mulai Scanner" untuk langsung aktifkan kamera
+                        </p>
+                        <div className="mt-3 text-xs text-blue-600">
+                          <p>✅ Mendukung QR Code & Barcode</p>
+                          <p>✅ Auto-detection UNPAD01, ITB01, UI01, dll</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Manual Input & File Upload */}
           <Card className="shadow-md">
@@ -309,7 +450,7 @@ export function AdminScanner() {
                 Input Manual & Upload
               </CardTitle>
               <CardDescription className="text-gray-500">
-                Alternatif jika scanner kamera tidak berfungsi - mendukung QR Code & Barcode
+                Alternatif jika scanner kamera tidak berfungsi
               </CardDescription>
             </CardHeader>
             <CardContent className="p-6 space-y-4">
@@ -342,22 +483,6 @@ export function AdminScanner() {
                 <p className="text-xs text-gray-500">
                   Supported: JPG, PNG, GIF, WebP. Pastikan QR Code atau Barcode terlihat jelas.
                 </p>
-              </div>
-
-              {/* Sample Images for Testing */}
-              <div className="border-t pt-4">
-                <Label className="text-gray-700 mb-2 block">Sample QR Code & Barcode untuk Testing:</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-white border rounded p-2 text-center">
-                    <img src="/barcode-sample.png" alt="UI01 Barcode" className="w-full h-12 object-contain mb-1" />
-                    <p className="text-xs text-gray-600">UI01 (Barcode)</p>
-                  </div>
-                  <div className="bg-white border rounded p-2 text-center">
-                    <img src="/barcode-itb01.png" alt="ITB01 Barcode" className="w-full h-12 object-contain mb-1" />
-                    <p className="text-xs text-gray-600">ITB01 (Barcode)</p>
-                  </div>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Klik kanan → Save Image → Upload untuk testing</p>
               </div>
 
               {/* Manual Input */}
