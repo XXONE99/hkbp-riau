@@ -245,27 +245,26 @@ export function AdminScanner() {
     setUploadResult(null)
   }
 
-  const startScanning = () => {
-    console.log("🎯 STARTING SCANNER: Activating camera and scanning...")
-    setIsScanning(true)
-    setFoundParticipant(null)
-    setScannedCode("")
-    setUploadResult(null)
-    
-    toast({
-      title: "Scanner Aktif",
-      description: "Kamera sedang diaktifkan, arahkan ke QR Code atau Barcode",
-    })
-  }
-
-  const stopScanning = () => {
-    console.log("🛑 STOPPING SCANNER: Deactivating camera...")
-    setIsScanning(false)
-    
-    toast({
-      title: "Scanner Dimatikan",
-      description: "Kamera telah dimatikan",
-    })
+  // FIXED: Clean scanner control - langsung start/stop tanpa UI berbelit
+  const toggleScanner = () => {
+    if (isScanning) {
+      console.log("🛑 STOPPING SCANNER...")
+      setIsScanning(false)
+      toast({
+        title: "Scanner Dimatikan",
+        description: "Kamera telah dinonaktifkan",
+      })
+    } else {
+      console.log("🎯 STARTING SCANNER...")
+      setIsScanning(true)
+      setFoundParticipant(null)
+      setScannedCode("")
+      setUploadResult(null)
+      toast({
+        title: "Scanner Aktif",
+        description: "Kamera sedang diaktifkan untuk scanning",
+      })
+    }
   }
 
   return (
@@ -343,93 +342,116 @@ export function AdminScanner() {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Scanner Section */}
         <div className="space-y-6">
-          {/* Camera Scanner */}
+          {/* FIXED: Clean Camera Scanner UI */}
           <Card className="shadow-md border-blue-200">
-            <CardHeader className="bg-white border-b">
+            <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
               <CardTitle className="flex items-center gap-2 text-lg font-bold text-blue-700">
                 <Camera className="h-5 w-5" />
-                Camera Scanner
+                Real-time Scanner
               </CardTitle>
               <CardDescription className="text-gray-500">
-                Gunakan kamera untuk scan QR Code atau Barcode secara real-time
+                Scan QR Code atau Barcode secara langsung dengan kamera
               </CardDescription>
             </CardHeader>
-            <CardContent className="p-4">
+            <CardContent className="p-6">
               <div className="space-y-4">
-                {/* Scanner Controls */}
-                <div className="flex gap-2">
+                {/* FIXED: Single Clean Button */}
+                <div className="flex items-center justify-between">
                   <Button
-                    onClick={startScanning}
-                    disabled={isScanning}
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white disabled:bg-green-600 disabled:cursor-not-allowed"
+                    onClick={toggleScanner}
+                    className={`${
+                      isScanning 
+                        ? "bg-red-600 hover:bg-red-700 text-white" 
+                        : "bg-blue-600 hover:bg-blue-700 text-white"
+                    } px-6 py-2`}
                   >
-                    <Camera className="h-4 w-4 mr-2" />
-                    {isScanning ? "🟢 Scanner Aktif - Sedang Memindai..." : "Mulai Scanner"}
+                    {isScanning ? (
+                      <>
+                        <X className="h-4 w-4 mr-2" />
+                        Stop Scanner
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="h-4 w-4 mr-2" />
+                        Mulai Scanner
+                      </>
+                    )}
                   </Button>
-                  {isScanning && (
-                    <Button onClick={stopScanning} variant="destructive" className="bg-red-600 hover:bg-red-700">
-                      <X className="h-4 w-4 mr-2" />
-                      Stop Scanner
-                    </Button>
-                  )}
+
+                  {/* Status Badges */}
+                  <div className="flex items-center gap-2">
+                    {isScanning && (
+                      <Badge className="bg-green-100 text-green-800 px-3 py-1">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse mr-2" />
+                        Scanning Active
+                      </Badge>
+                    )}
+                    {autoAttendanceEnabled && isScanning && (
+                      <Badge className="bg-blue-100 text-blue-800 px-2 py-1">
+                        Auto-Attendance ON
+                      </Badge>
+                    )}
+                  </div>
                 </div>
 
-                {/* Scanner Display */}
+                {/* FIXED: Clean Scanner Display */}
                 <div className="relative bg-gray-100 rounded-lg overflow-hidden">
                   {isScanning ? (
                     <div className="relative">
-                      {/* Auto-attendance indicator */}
+                      {/* Auto-attendance indicator overlay */}
                       {autoAttendanceEnabled && (
-                        <div className="absolute top-2 left-2 right-2 z-10">
-                          <div className="bg-green-500 bg-opacity-90 backdrop-blur-sm rounded-lg p-2 text-white text-center text-xs">
+                        <div className="absolute top-3 left-3 right-3 z-10">
+                          <div className="bg-green-500 bg-opacity-95 backdrop-blur-sm rounded-lg p-2 text-white text-center text-sm shadow-lg">
                             <p className="font-medium">✅ Auto-Attendance Aktif</p>
+                            <p className="text-xs opacity-90">Kehadiran otomatis tercatat saat kode terdeteksi</p>
                           </div>
                         </div>
                       )}
                       
-                      {/* Barcode Scanner Component with explicit props */}
+                      {/* Clean Barcode Scanner Component */}
                       <BarcodeScanner
                         onBarcodeDetected={handleBarcodeDetected}
                         isScanning={isScanning}
                         onScanningChange={setIsScanning}
                       />
                       
-                      {/* Scanner Overlay */}
+                      {/* Scanner Frame Overlay */}
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="relative">
-                          {/* Scanner Frame */}
-                          <div className="w-48 h-48 sm:w-64 sm:h-64 relative">
+                          <div className="w-56 h-56 relative">
                             {/* Corner indicators */}
-                            <div className="absolute top-0 left-0 w-6 h-6 border-l-3 border-t-3 border-white rounded-tl-lg"></div>
-                            <div className="absolute top-0 right-0 w-6 h-6 border-r-3 border-t-3 border-white rounded-tr-lg"></div>
-                            <div className="absolute bottom-0 left-0 w-6 h-6 border-l-3 border-b-3 border-white rounded-bl-lg"></div>
-                            <div className="absolute bottom-0 right-0 w-6 h-6 border-r-3 border-b-3 border-white rounded-br-lg"></div>
+                            <div className="absolute top-0 left-0 w-8 h-8 border-l-4 border-t-4 border-blue-500 rounded-tl-lg"></div>
+                            <div className="absolute top-0 right-0 w-8 h-8 border-r-4 border-t-4 border-blue-500 rounded-tr-lg"></div>
+                            <div className="absolute bottom-0 left-0 w-8 h-8 border-l-4 border-b-4 border-blue-500 rounded-bl-lg"></div>
+                            <div className="absolute bottom-0 right-0 w-8 h-8 border-r-4 border-b-4 border-blue-500 rounded-br-lg"></div>
                             
                             {/* Scanning line animation */}
-                            <div className="absolute inset-x-4 top-1/2 h-0.5 bg-red-500 animate-pulse"></div>
+                            <div className="absolute inset-x-6 top-1/2 h-1 bg-blue-500 animate-pulse rounded-full"></div>
                           </div>
                         </div>
                       </div>
 
-                      {/* Instructions */}
-                      <div className="absolute bottom-4 left-4 right-4 text-center text-white bg-black bg-opacity-50 rounded-lg p-2">
+                      {/* Clean Instructions */}
+                      <div className="absolute bottom-4 left-4 right-4 text-center text-white bg-black bg-opacity-60 rounded-lg p-3">
                         <p className="text-sm font-medium">📱 Arahkan kamera ke QR Code atau Barcode</p>
                         <p className="text-xs mt-1 opacity-90">
-                          Scanner akan terus aktif hingga Anda klik "Stop Scanner"
+                          Format: UI01, ITB01, UGM01, UNPAD01, dll
                         </p>
                       </div>
                     </div>
                   ) : (
-                    <div className="aspect-video flex items-center justify-center text-gray-500 bg-gray-100">
-                      <div className="text-center">
-                        <Camera className="h-12 w-12 mx-auto mb-3 text-gray-400" />
-                        <p className="text-sm font-medium mb-1">Scanner Siap Digunakan</p>
-                        <p className="text-xs text-gray-400">
-                          Klik "Mulai Scanner" untuk langsung aktifkan kamera
+                    <div className="aspect-video flex items-center justify-center text-gray-500 bg-gradient-to-br from-gray-50 to-gray-100">
+                      <div className="text-center p-6">
+                        <Camera className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+                        <h3 className="text-lg font-semibold text-gray-700 mb-2">Scanner Siap Digunakan</h3>
+                        <p className="text-sm text-gray-500 mb-4">
+                          Klik "Mulai Scanner" untuk mengaktifkan kamera dan mulai scanning
                         </p>
-                        <div className="mt-3 text-xs text-blue-600">
-                          <p>✅ Mendukung QR Code & Barcode</p>
-                          <p>✅ Auto-detection UNPAD01, ITB01, UI01, dll</p>
+                        <div className="bg-blue-50 rounded-lg p-3 text-xs text-blue-700">
+                          <p className="font-medium mb-1">✅ Mendukung:</p>
+                          <p>• QR Code & Barcode detection</p>
+                          <p>• Format UI01, ITB01, UGM01, UNPAD01</p>
+                          <p>• Auto-attendance otomatis</p>
                         </div>
                       </div>
                     </div>
